@@ -1,6 +1,7 @@
 mountpoints:
   /:
-    url: https://content.da.live/cpini/adobe-aco/
+    #url: https://content.da.live/cpini/adobe-aco/
+    url: https://drive.google.com/drive/folders/1rMLSvbUn4OEqpL0PgpY3s07-lIkd98lv
     type: markup
 
 folders:
