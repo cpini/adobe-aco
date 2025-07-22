@@ -1,8 +1,5 @@
 mountpoints:
-  /:
-    #url: https://content.da.live/cpini/adobe-aco/
-    url: https://drive.google.com/drive/folders/1rMLSvbUn4OEqpL0PgpY3s07-lIkd98lv?usp=sharing
-    type: markup
+  /: https://adobe.sharepoint.com/:f:/r/sites/HelixProjects/Shared%20Documents/sites/starter-content-commerce
 
 folders:
   /products/: /products/default

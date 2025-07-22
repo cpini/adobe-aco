@@ -1,0 +1,11 @@
+services:
+  nodejs:
+    build:
+      context: ${PROJECT_ROOT}
+      args:
+       NODE_VERSION: ${NODE_VERSION}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${PROJECT_ROOT}:/app
+    container_name: adobe-aco

@@ -1,79 +1,9 @@
 /* eslint-disable import/prefer-default-export, import/no-cycle */
-import { getMetadata } from './aem.js';
-import {
-  getHeaders,
-  getConfigValue,
-  getCookie,
-  getRootPath,
-} from './configs.js';
-import { getConsent } from './scripts.js';
-
-/**
- * Gets placeholders object.
- * @param {string} [prefix] Location of placeholders
- * @returns {object} Window placeholders object
- */
-// eslint-disable-next-line import/prefer-default-export
-export async function fetchPlaceholders(prefix = 'default') {
-  const overrides = getMetadata('placeholders') || getRootPath().replace(/\/$/, '/placeholders.json') || '';
-  const [fallback, override] = overrides.split('\n');
-  window.placeholders = window.placeholders || {};
-
-  if (!window.placeholders[prefix]) {
-    window.placeholders[prefix] = new Promise((resolve) => {
-      const url = fallback || `${prefix === 'default' ? '' : prefix}/placeholders.json`;
-      Promise.all([fetch(url), override ? fetch(override) : Promise.resolve()])
-        // get json from sources
-        .then(async ([resp, oResp]) => {
-          if (resp.ok) {
-            if (oResp?.ok) {
-              return Promise.all([resp.json(), await oResp.json()]);
-            }
-            return Promise.all([resp.json(), {}]);
-          }
-          return [{}];
-        })
-        // process json from sources
-        .then(([json, oJson]) => {
-          const placeholders = {};
-
-          const allKeys = new Set([
-            ...(json.data?.map(({ Key }) => Key) || []),
-            ...(oJson?.data?.map(({ Key }) => Key) || []),
-          ]);
-
-          allKeys.forEach((Key) => {
-            if (!Key) return;
-            const keys = Key.split('.');
-            const originalValue = json.data?.find((item) => item.Key === Key)?.Value;
-            const overrideValue = oJson?.data?.find((item) => item.Key === Key)?.Value;
-            const finalValue = overrideValue ?? originalValue;
-            const lastKey = keys.pop();
-            const target = keys.reduce((obj, key) => {
-              obj[key] = obj[key] || {};
-              return obj[key];
-            }, placeholders);
-            target[lastKey] = finalValue;
-          });
-
-          window.placeholders[prefix] = placeholders;
-          resolve(placeholders);
-        })
-        .catch((error) => {
-          // eslint-disable-next-line no-console
-          console.error('error loading placeholders', error);
-          // error loading placeholders
-          window.placeholders[prefix] = {};
-          resolve(window.placeholders[prefix]);
-        });
-    });
-  }
-  return window.placeholders[`${prefix}`];
-}
+import { getConfigValue } from './configs.js';
 
 /* Common query fragments */
-export const priceFieldsFragment = `fragment priceFields on ProductViewPrice {
-  roles
+
+const priceFieldsFragment = `fragment priceFields on ProductViewPrice {
   regular {
       amount {
           currency
@@ -88,44 +18,188 @@ export const priceFieldsFragment = `fragment priceFields on ProductViewPrice {
   }
 }`;
 
-/**
- * Creates a short hash from an object by sorting its entries and hashing them.
- * @param {Object} obj - The object to hash
- * @param {number} [length=5] - Length of the resulting hash
- * @returns {string} A short hash string
- */
-function createHashFromObject(obj, length = 5) {
-  // Sort entries by key and create a string of key-value pairs
-  const objString = Object.entries(obj)
-    .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
-    .map(([key, value]) => `${key}:${value}`)
-    .join('|');
+/* Queries PDP */
+export const refineProductQuery = `query RefineProductQuery($sku: String!, $variantIds: [String!]!) {
+  refineProduct(
+    sku: $sku,
+    optionIds: $variantIds
+  ) {
+    images(roles: []) {
+      url
+      roles
+      label
+    }
+    ... on SimpleProductView {
+      price {
+        final {
+          amount {
+            currency
+            value
+          }
+        }
+        regular {
+          amount {
+            currency
+            value
+          }
+        }
+      }
+    }
+    addToCartAllowed
+  }
+}`;
 
-  // Create a short hash using a simple string manipulation
-  return objString
-    .split('')
-    .reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) % 2147483647, 0)
-    .toString(36)
-    .slice(0, length);
+export const productDetailQuery = `query ProductQuery($sku: String!) {
+  products(skus: [$sku]) {
+    __typename
+    id
+    sku
+    name
+    description
+    shortDescription
+    urlKey
+    inStock
+    images(roles: []) {
+      url
+      label
+      roles
+    }
+    attributes(roles: []) {
+      name
+      label
+      value
+      roles
+    }
+    ... on SimpleProductView {
+      price {
+        ...priceFields
+      }
+    }
+    ... on ComplexProductView {
+      options {
+        id
+        title
+        required
+        values {
+          id
+          title
+          inStock
+          ...on ProductViewOptionValueSwatch {
+            type
+            value
+          }
+        }
+      }
+      priceRange {
+        maximum {
+          ...priceFields
+        }
+        minimum {
+          ...priceFields
+        }
+      }
+    }
+  }
 }
+${priceFieldsFragment}`;
 
-export async function commerceEndpointWithQueryParams() {
-  const urlWithQueryParams = new URL(getConfigValue('commerce-endpoint'));
-  const headers = getHeaders('cs');
-  const shortHash = createHashFromObject(headers);
-  urlWithQueryParams.searchParams.append('cb', shortHash);
-  return urlWithQueryParams;
+/* Queries PLP */
+
+export const productSearchQuery = (addCategory = false) => `query ProductSearch(
+  $currentPage: Int = 1
+  $pageSize: Int = 20
+  $phrase: String = ""
+  $sort: [ProductSearchSortInput!] = []
+  $filter: [SearchClauseInput!] = []
+  ${addCategory ? '$categoryId: String!' : ''}
+) {
+  ${addCategory ? `categories(ids: [$categoryId]) {
+      name
+      urlKey
+      urlPath
+  }` : ''}
+  productSearch(
+      current_page: $currentPage
+      page_size: $pageSize
+      phrase: $phrase
+      sort: $sort
+      filter: $filter
+  ) {
+      facets {
+          title
+          type
+          attribute
+          buckets {
+              title
+              __typename
+              ... on RangeBucket {
+                  count
+                  from
+                  to
+              }
+              ... on ScalarBucket {
+                  count
+                  id
+              }
+              ... on StatsBucket {
+                  max
+                  min
+              }
+          }
+      }
+      items {
+          product {
+            id
+          }
+          productView {
+              name
+              sku
+              urlKey
+              images(roles: "thumbnail") {
+                url
+              }
+              __typename
+              ... on SimpleProductView {
+                  price {
+                      ...priceFields
+                  }
+              }
+              ... on ComplexProductView {
+                  priceRange {
+                      minimum {
+                          ...priceFields
+                      }
+                      maximum {
+                          ...priceFields
+                      }
+                  }
+              }
+          }
+      }
+      page_info {
+          current_page
+          total_pages
+          page_size
+      }
+      total_count
+  }
 }
+${priceFieldsFragment}`;
 
 /* Common functionality */
 
 export async function performCatalogServiceQuery(query, variables) {
   const headers = {
-    ...(getHeaders('cs')),
     'Content-Type': 'application/json',
+    'Magento-Environment-Id': await getConfigValue('commerce-environment-id'),
+    'Magento-Website-Code': await getConfigValue('commerce-website-code'),
+    'Magento-Store-View-Code': await getConfigValue('commerce-store-view-code'),
+    'Magento-Store-Code': await getConfigValue('commerce-store-code'),
+    'Magento-Customer-Group': await getConfigValue('commerce-customer-group'),
+    'x-api-key': await getConfigValue('commerce-x-api-key'),
   };
 
-  const apiCall = await commerceEndpointWithQueryParams();
+  const apiCall = new URL(await getConfigValue('commerce-endpoint'));
   apiCall.searchParams.append('query', query.replace(/(?:\r\n|\r|\n|\t|[\s]{4})/g, ' ')
     .replace(/\s\s+/g, ' '));
   apiCall.searchParams.append('variables', variables ? JSON.stringify(variables) : null);
@@ -145,15 +219,16 @@ export async function performCatalogServiceQuery(query, variables) {
 }
 
 export function getSignInToken() {
-  return getCookie('auth_dropin_user_token');
+  // TODO: Implement in project
+  return '';
 }
 
 export async function performMonolithGraphQLQuery(query, variables, GET = true, USE_TOKEN = false) {
-  const GRAPHQL_ENDPOINT = getConfigValue('commerce-core-endpoint');
+  const GRAPHQL_ENDPOINT = await getConfigValue('commerce-core-endpoint');
 
   const headers = {
     'Content-Type': 'application/json',
-    Store: getConfigValue('headers.cs.Magento-Store-View-Code'),
+    Store: 'default', // TODO await getConfigValue('commerce-store-code'),
   };
 
   if (USE_TOKEN) {
@@ -178,11 +253,12 @@ export async function performMonolithGraphQLQuery(query, variables, GET = true, 
       }),
     });
   } else {
-    const endpoint = new URL(GRAPHQL_ENDPOINT);
-    endpoint.searchParams.set('query', query.replace(/(?:\r\n|\r|\n|\t|[\s]{4})/g, ' ').replace(/\s\s+/g, ' '));
-    endpoint.searchParams.set('variables', JSON.stringify(variables));
+    const params = new URLSearchParams({
+      query: query.replace(/(?:\r\n|\r|\n|\t|[\s]{4})/g, ' ').replace(/\s\s+/g, ' '),
+      variables: JSON.stringify(variables),
+    });
     response = await fetch(
-      endpoint.toString(),
+      `${GRAPHQL_ENDPOINT}?${params.toString()}`,
       { headers },
     );
   }
@@ -221,7 +297,7 @@ export function renderPrice(product, format, html = (strings, ...values) => stri
 
     if (finalMin.amount.value !== regularMin.amount.value) {
       return html`<${Fragment}>
-      <span class="price-final">${format(finalMin.amount.value)} - ${format(regularMin.amount.value)}</span>
+      <span class="price-final">${format(finalMin.amount.value)} - ${format(regularMin.amount.value)}</span> 
     </${Fragment}>`;
     }
 
@@ -239,39 +315,144 @@ export function getSkuFromUrl() {
   return result?.[1];
 }
 
-export function getOptionsUIDsFromUrl() {
-  return new URLSearchParams(window.location.search).get('optionsUIDs')?.split(',');
+const productsCache = {};
+export async function getProduct(sku) {
+  // eslint-disable-next-line no-param-reassign
+  sku = sku.toUpperCase();
+  if (productsCache[sku]) {
+    return productsCache[sku];
+  }
+  const rawProductPromise = performCatalogServiceQuery(productDetailQuery, { sku });
+  const productPromise = rawProductPromise.then((productData) => {
+    if (!productData?.products?.[0]) {
+      return null;
+    }
+
+    return productData?.products?.[0];
+  });
+
+  productsCache[sku] = productPromise;
+  return productPromise;
 }
 
-export async function trackHistory() {
-  if (!getConsent('commerce-recommendations')) {
-    return;
-  }
-  // Store product view history in session storage
-  const storeViewCode = getConfigValue('headers.cs.Magento-Store-View-Code');
-  window.adobeDataLayer.push((dl) => {
-    dl.addEventListener('adobeDataLayer:change', (event) => {
-      if (!event.productContext) {
-        return;
+/* PLP specific functionality */
+
+// TODO
+// You can get this list via attributeMetadata query
+export const ALLOWED_FILTER_PARAMETERS = ['page', 'pageSize', 'sort', 'sortDirection', 'q', 'price', 'size', 'color_family'];
+
+export async function loadCategory(state) {
+  try {
+    // TODO: Be careful if query exceeds GET size limits, then switch to POST
+    const variables = {
+      pageSize: state.currentPageSize,
+      currentPage: state.currentPage,
+      sort: [{
+        attribute: state.sort,
+        direction: state.sortDirection === 'desc' ? 'DESC' : 'ASC',
+      }],
+    };
+
+    variables.phrase = state.type === 'search' ? state.searchTerm : '';
+
+    if (Object.keys(state.filters).length > 0) {
+      variables.filter = [];
+      Object.keys(state.filters).forEach((key) => {
+        if (key === 'price') {
+          const [from, to] = state.filters[key];
+          if (from && to) {
+            variables.filter.push({ attribute: key, range: { from, to } });
+          }
+        } else if (state.filters[key].length > 1) {
+          variables.filter.push({ attribute: key, in: state.filters[key] });
+        } else if (state.filters[key].length === 1) {
+          variables.filter.push({ attribute: key, eq: state.filters[key][0] });
+        }
+      });
+    }
+
+    if (state.type === 'category' && state.category.id) {
+      variables.categoryId = state.category.id;
+      variables.filter = variables.filter || [];
+      variables.filter.push({ attribute: 'categoryIds', eq: state.category.id });
+    }
+
+    window.adobeDataLayer.push((dl) => {
+      const requestId = crypto.randomUUID();
+      window.sessionStorage.setItem('searchRequestId', requestId);
+      const searchInputContext = dl.getState('searchInputContext') ?? { units: [] };
+      const searchUnitId = 'livesearch-plp';
+      const unit = {
+        searchUnitId,
+        searchRequestId: requestId,
+        queryTypes: ['products', 'suggestions'],
+        ...variables,
+      };
+      const index = searchInputContext.units.findIndex((u) => u.searchUnitId === searchUnitId);
+      if (index < 0) {
+        searchInputContext.units.push(unit);
+      } else {
+        searchInputContext.units[index] = unit;
       }
-      const key = `${storeViewCode}:productViewHistory`;
-      let viewHistory = JSON.parse(window.localStorage.getItem(key) || '[]');
-      viewHistory = viewHistory.filter((item) => item.sku !== event.productContext.sku);
-      viewHistory.push({ date: new Date().toISOString(), sku: event.productContext.sku });
-      window.localStorage.setItem(key, JSON.stringify(viewHistory.slice(-10)));
-    }, { path: 'productContext' });
-    dl.addEventListener('place-order', () => {
-      const shoppingCartContext = dl.getState('shoppingCartContext');
-      if (!shoppingCartContext) {
-        return;
-      }
-      const key = `${storeViewCode}:purchaseHistory`;
-      const purchasedProducts = shoppingCartContext.items.map((item) => item.product.sku);
-      const purchaseHistory = JSON.parse(window.localStorage.getItem(key) || '[]');
-      purchaseHistory.push({ date: new Date().toISOString(), items: purchasedProducts });
-      window.localStorage.setItem(key, JSON.stringify(purchaseHistory.slice(-5)));
+      dl.push({ searchInputContext }, { event: 'search-request-sent', eventInfo: { searchUnitId } });
     });
+
+    const response = await performCatalogServiceQuery(productSearchQuery(state.type === 'category'), variables);
+
+    // Parse response into state
+    return {
+      pages: Math.max(response.productSearch.page_info.total_pages, 1),
+      products: {
+        items: response.productSearch.items
+          .map((product) => ({ ...product.productView, ...product.product }))
+          .filter((product) => product !== null),
+        total: response.productSearch.total_count,
+      },
+      category: response.categories?.[0] ?? {},
+      facets: response.productSearch.facets.filter((facet) => facet.attribute !== 'categories'),
+    };
+  } catch (e) {
+    console.error('Error loading products', e);
+    return {
+      pages: 1,
+      products: {
+        items: [],
+        total: 0,
+      },
+      facets: [],
+    };
+  }
+}
+
+export function parseQueryParams() {
+  const params = new URLSearchParams(window.location.search);
+  const newState = {
+    filters: {
+      inStock: ['true'],
+    },
+  };
+  params.forEach((value, key) => {
+    if (!ALLOWED_FILTER_PARAMETERS.includes(key)) {
+      return;
+    }
+
+    if (key === 'page') {
+      newState.currentPage = parseInt(value, 10) || 1;
+    } else if (key === 'pageSize') {
+      newState.currentPageSize = parseInt(value, 10) || 10;
+    } else if (key === 'sort') {
+      newState.sort = value;
+    } else if (key === 'sortDirection') {
+      newState.sortDirection = value === 'desc' ? 'desc' : 'asc';
+    } else if (key === 'q') {
+      newState.searchTerm = value;
+    } else if (key === 'price') {
+      newState.filters[key] = value.split(',').map((v) => parseInt(v, 10) || 0);
+    } else {
+      newState.filters[key] = value.split(',');
+    }
   });
+  return newState;
 }
 
 export function setJsonLd(data, name) {
@@ -287,77 +468,4 @@ export function setJsonLd(data, name) {
   script.innerHTML = JSON.stringify(data);
   script.dataset.name = name;
   document.head.appendChild(script);
-}
-
-export async function loadErrorPage(code = 404) {
-  const htmlText = await fetch(`/${code}.html`).then((response) => {
-    if (response.ok) {
-      return response.text();
-    }
-    throw new Error(`Error getting ${code} page`);
-  });
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(htmlText, 'text/html');
-  document.body.innerHTML = doc.body.innerHTML;
-  // get dropin styles
-  document.head.querySelectorAll('style[data-dropin]').forEach((style) => {
-    doc.head.appendChild(style);
-  });
-  document.head.innerHTML = doc.head.innerHTML;
-
-  // https://developers.google.com/search/docs/crawling-indexing/javascript/fix-search-javascript
-  // Point 2. prevent soft 404 errors
-  if (code === 404) {
-    const metaRobots = document.createElement('meta');
-    metaRobots.name = 'robots';
-    metaRobots.content = 'noindex';
-    document.head.appendChild(metaRobots);
-  }
-
-  // When moving script tags via innerHTML, they are not executed. They need to be re-created.
-  const notImportMap = (c) => c.textContent && c.type !== 'importmap';
-  Array.from(document.head.querySelectorAll('script'))
-    .filter(notImportMap)
-    .forEach((c) => c.remove());
-  Array.from(doc.head.querySelectorAll('script'))
-    .filter(notImportMap)
-    .forEach((oldScript) => {
-      const newScript = document.createElement('script');
-      Array.from(oldScript.attributes).forEach(({ name, value }) => {
-        newScript.setAttribute(name, value);
-      });
-      const scriptText = document.createTextNode(oldScript.innerHTML);
-      newScript.appendChild(scriptText);
-      document.head.appendChild(newScript);
-    });
-}
-
-export function mapProductAcdl(product) {
-  const regularPrice = product?.priceRange?.minimum?.regular?.amount.value
-    || product?.price?.regular?.amount.value || 0;
-  const specialPrice = product?.priceRange?.minimum?.final?.amount.value
-    || product?.price?.final?.amount.value;
-  // storefront-events-collector will use storefrontInstanceContext.storeViewCurrencyCode
-  // if undefined, no default value is necessary.
-  const currencyCode = product?.priceRange?.minimum?.final?.amount.currency
-    || product?.price?.final?.amount.currency || undefined;
-  const minimalPrice = product?.priceRange ? regularPrice : undefined;
-  const maximalPrice = product?.priceRange
-    ? product?.priceRange?.maximum?.regular?.amount.value : undefined;
-
-  return {
-    productId: parseInt(product.externalId, 10) || 0,
-    name: product?.name,
-    sku: product?.variantSku || product?.sku,
-    topLevelSku: product?.sku,
-    pricing: {
-      regularPrice,
-      minimalPrice,
-      maximalPrice,
-      specialPrice,
-      currencyCode,
-    },
-    canonicalUrl: new URL(`/products/${product.urlKey}/${product.sku}`, window.location.origin).toString(),
-    mainImageUrl: product?.images?.[0]?.url,
-  };
 }

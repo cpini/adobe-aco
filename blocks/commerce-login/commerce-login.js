@@ -1,21 +1,13 @@
-/* eslint-disable import/no-unresolved */
-/* eslint-disable import/no-extraneous-dependencies */
-import { SignIn } from '@dropins/storefront-auth/containers/SignIn.js';
-import { render as authRenderer } from '@dropins/storefront-auth/render.js';
-import { checkIsAuthenticated } from '../../scripts/configs.js';
-import { CUSTOMER_FORGOTPASSWORD_PATH, CUSTOMER_ACCOUNT_PATH } from '../../scripts/constants.js';
-import { rootLink } from '../../scripts/scripts.js';
+import { readBlockConfig } from '../../scripts/aem.js';
 
-// Initialize
-import '../../scripts/initializers/auth.js';
+export default function decorate(block) {
+  const config = readBlockConfig(block);
 
-export default async function decorate(block) {
-  if (checkIsAuthenticated()) {
-    window.location.href = rootLink(CUSTOMER_ACCOUNT_PATH);
-  } else {
-    await authRenderer.render(SignIn, {
-      routeForgotPassword: () => rootLink(CUSTOMER_FORGOTPASSWORD_PATH),
-      routeRedirectOnSignIn: () => rootLink(CUSTOMER_ACCOUNT_PATH),
-    })(block);
-  }
+  const content = document.createRange().createContextualFragment(`<div>
+    Commerce Account drop-in (Login)
+    <pre>${JSON.stringify(config, null, 2)}</pre>
+  </div>`);
+
+  block.textContent = '';
+  block.append(content);
 }
